@@ -1,0 +1,229 @@
+---
+title: "Firefighter Sleep Disruption EDA"
+format: html
+
+execute:
+  warning: false
+  message: false
+---
+
+# Purpose
+Firefighters must respond to emergency calls during the night. These disruptions contribute significantly to long term physical and mental stress. While these disruptions cannot be prevented completely, knowing which stations and shifts are impacted the most and why can allow fire department command staff to implement policies or technology to mitigate them. 
+
+This exploratory data analyses serves to identify the quality and structure of anonymized data gathered from a fire department to inform deeper analysis.
+
+# Data
+
+The data was first extracted from RMS and CAD databases using SQL. See the sql folder for more details. 
+Next, the data was cleaned and transformed to a usable baseline in the script `01_data_prep.R`. Incident numbers, stations, and callsigns were anonymized. 
+
+```{r}
+
+library(tidyverse)
+library(DT)
+
+incident_unit_responses_df <- readRDS('../datasets/incident_unit_responses.rds')
+
+datatable(head(incident_unit_responses_df))
+
+```
+
+The data is at the unit response level grain with unit type, incident type, station, times, and flags. Now we will examine the dataset further.
+
+
+## Data Summary
+
+```{r}
+
+library(skimr)
+
+skim(incident_unit_responses_df)
+
+```
+
+## Variable Summary
+
+### Incident ID
+There are 257,959 unique incident ids in this dataset, whereas there are 406,509 rows in the dataset. This suggests an average of 1.58 units respond to each call. 
+
+### Timespans
+These features were calculated in `01_data_prep.r`. These values are in seconds. All of the mins of these features are negative. Let's investigate them. 
+
+```{r}
+
+incident_unit_responses_df %>%
+  summarize(n_negative_turnout_time = sum(turnout_time < 0, na.rm = TRUE),
+            n_negative_travel_time = sum(travel_time < 0, na.rm = TRUE),
+            n_negative_scene_time = sum(scene_time < 0, na.rm = TRUE),
+            n_negative_commit_time = sum(commit_time < 0, na.rm = TRUE)) %>%
+  datatable()
+
+```
+
+Exploring this further, we see that there are very few negative values. These can be safely excluded. Looking at the maximum values, we see 46,333 seconds. This equates to 12.87 hours, which may be possible for some very long structure fire cases. We will examine this further. 
+
+#### Turnout Time
+The time between a unit being dispatched and going en route. 
+Missing values may be due to dispatcher error, station walk-ins, or being dispatched and cancelled before going en route.  
+
+#### Travel Time
+The time between going en route and arriving on scene.
+Missing values generally correspond to the apparatus being cancelled en route. 
+
+#### En Route to Clear Time
+The time between going to en route and clearing. This is useful for estimating the travel time for apparatus that were cancelled en route. 
+
+#### Scene Time
+The time between arriving on scene and the clear time.
+Missing values also correspond to being cancelled en route.
+
+#### Commit Time
+The time between a unit being dispatched and being cleared, or the sum of turnout, travel, and scene time.
+Since all calls without a clear time or dispatch time were removed in data prep, this has 100% completion.
+
+### Factors
+
+#### Incident Type
+
+```{r}
+
+incident_unit_responses_df %>%
+  group_by(incident_type_code, incident_type) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count)) %>%
+  datatable()
+
+```
+
+There are 136 unique incident types with the most common ones being medical calls, assists, cancelled en routes, motor vehicle accidents, and alarm activations. Medical assist calls are defined as the fire department using only manpower to assist an ambulance company. Some of these calls likely could be handled by the ambulance only since the department this data was gathered from uses third-party ambulance services to transport their patients. The high volume of assists, cancelled incidents, and alarms suggests that there could be room for improvement if these patterns are also present at night. We will analyze these further. 
+
+#### Station ID
+There are 29 stations that have been randomly mapped to anonymous values.
+
+#### Unit Type
+
+This field was computed by splitting out the station and categorical component from the original value. For example, if the original callsign was E129, then unit type becomes 'E' and the station '129'. 
+
+```{r}
+incident_unit_responses_df %>%
+  group_by(unit_type) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count)) %>%
+  datatable()
+```
+There are 26 unit types, but engines (E), rescues (R), ALS engines (EA), trucks (T), squads (SQ), hazmat trucks (H), and air trucks (AIR) run the vast majority of all calls. All other vehicle types are specialty units. 
+
+### Logical Flags
+
+#### Cancelled Before En Route
+This is true if both en route time and arrival time are missing.
+Only 3% of calls are cancelled before they go en route.
+
+#### Cancelled En Route
+This is true if there is an en route time but no arrival time. 
+29% of unit responses were classified as cancelled en route. Incident types can also be cancelled en route (611), suggesting that all dispatched units did not arrive, or and arrived and cancelled (611CS) suggesting that they were cancelled shortly after arrival.
+
+#### Night Call
+Calls are classified as night calls if their dispatch to clear time overlaps with 22:00-06:00. This could be refined further by taking into account travel time back to the station in the case of calls that end just before 2200. We will keep it simple for now. 
+
+### Timestamps
+
+#### Dispatch
+This is the time the dispatcher dispatches the unit. It represents the first time a crew is notified of a call and will be the time that they wake up if they are sleeping. 
+
+#### En Route
+This time represents when the units will go en route. Either a crew can press a button in the apparatus to record this automatically or call into dispatch. 4% of the values are missing, likely due to being cancelled before going en route or due to dispather error.
+
+#### Arrival
+This time represents when the unit arrives on scene. 32% of these values are missing, most likely due to being cancelled en route. 
+
+#### Clear
+When the unit is cleared off the scene. 
+
+### Hours
+
+#### Dispatch and Clear Hours
+These are the time of day/night when the incident was dispatched or cleared. Used to calculate the nighttime flag, and could be useful for assessing the nighttime call distribution. 
+
+
+## Additional Cleaning
+
+We identified a few issues that need to be corrected. First we remove all time spans below 0 because they are obviously due to a technical error. Additionally, there are 1666 missing dispatch times, which make our commit time also null. We remove those because our analysis depends on measuring the total commit time. We will retain 
+
+```{r}
+
+incident_unit_responses_df <- incident_unit_responses_df %>%
+  filter(!is.na(dispatch_dt),
+         turnout_time >= 0 | is.na(turnout_time),
+         travel_time >= 0 | is.na(travel_time),
+         enroute_to_clear_time >= 0 | is.na(travel_time),
+         scene_time >= 0 | is.na(scene_time),
+         commit_time >= 0 | is.na(commit_time))
+
+incident_unit_responses_df %>%
+  summarize(n_na_dispatch_time = sum(is.na(dispatch_dt)),
+            n_negative_turnout_time = sum(turnout_time < 0, na.rm = TRUE),
+            n_negative_travel_time = sum(travel_time < 0, na.rm = TRUE),
+            n_negative_enroute_to_clear_time = sum(enroute_to_clear_time < 0, na.rm = TRUE),
+            n_negative_scene_time = sum(scene_time < 0, na.rm = TRUE),
+            n_negative_commit_time = sum(commit_time < 0, na.rm = TRUE)) %>%
+  datatable()
+
+```
+
+## Transformation and Feature Engineering
+
+### Sleep Timestamp
+We can estimate the time the crew could return to sleep under the assumptions that they returned to the station immediately after the clear time, it took the same amount of time as the travel time to get back, and it took them 15 minutes (900 sec) to return to sleep. If we had the real time location data of the apparatus, then we could estimate this with greater accuracy, since some calls may be back-to-back without returning to the station. We can account for this if the calculated sleep time overlaps with the next call's dispatch time. We also need to consider cancelled before going en route and cancelled en route calls. To address this, we will create a new variable drive time that's equal to travel time if the call has both en route and arrival timestamps and equal to enroute to clear time if the unit was cancelled and never arrived.
+
+$$
+\Delta t_{\text{drive}} =
+\begin{cases}
+0 & \text{if cancelled before en route} \\
+t_{\text{clear}} - t_{\text{enroute}} & \text{if cancelled en route} \\
+t_{\text{arrived}} - t_{\text{enroute}} & \text{if arrived on scene}
+\end{cases}
+$$
+
+
+$$
+t_{\text{sleep}}
+= t_{\text{disp}}
++ \Delta t_{\text{commit}}
++ \Delta t_{\text{drive}}
++ 900\ \text{sec}
+$$
+
+If a call comes in and the crew never goes in route, their sleep is disrupted and they get back to sleep after about 15 minutes.
+If they are dispatched and go en route but never arrive, then their commit time represents the time from waking up to getting cancelled. They will then  
+
+
+### Impact Duration
+After we have an estimated sleep time, we can calculate the total impact time of a call. This will be how much the dispatch to sleep timespan overlaps with the period from 22:00 to 06:00. If a call is dispatched at 20:01 and the estimated sleep time is 22:01, we don't want to assume that 2 hours of sleep were impacted.
+
+```{r}
+
+get_sleep_period_start_dt = function(dt) {
+  floor_date(dt, unit = 'day') + 22 * 60 * 60
+}
+
+get_sleep_period_end_dt = function(dt) {
+  floor_date(dt, unit = 'day') + 30 * 60 * 60
+}
+
+get_sleep_period_start_dt(as.POSIXct("2021-12-02 23:00:27 UTC"))
+get_sleep_period_end_dt(incident_unit_responses_df$dispatch_dt[500])
+
+incident_unit_responses_df <- incident_unit_responses_df %>%
+  mutate(date = as.Date(dispatch_dt),
+         drive_time = case_when(cancelled_enroute_flag ~ difftime(clear_dt, enroute_dt),
+                                TRUE ~ travel_time),
+         sleep_dt = dispatch_dt + commit_time + drive_time + 900) %>%
+  mutate(impact_time = difftime(dispatch_dt, sleep_dt))
+
+```
+
+ 
+
+
+

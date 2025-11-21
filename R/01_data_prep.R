@@ -54,9 +54,12 @@ incident_unit_responses_anon_df <- inner_join(incident_unit_responses_df, incide
             clear_hour = hms(paste0(hour(clear_dt), ":", minute(clear_dt), ":", second(clear_dt))),
             dispatch_dt, enroute_dt, arrival_dt, clear_dt,
             cancelled_before_enroute_flag = case_when(is.na(enroute_dt) & is.na(arrival_dt) ~ TRUE, TRUE ~ FALSE),
-            cancelled_enroute_flag = case_when(!is.na(enroute_dt) &is.na(arrival_dt) ~ TRUE, TRUE ~ FALSE),
+            cancelled_enroute_flag = case_when(!is.na(enroute_dt) & is.na(arrival_dt) ~ TRUE, TRUE ~ FALSE),
             turnout_time = difftime(enroute_dt, dispatch_dt),
             travel_time = difftime(arrival_dt, enroute_dt),
+            enroute_to_clear_time = difftime(clear_dt, enroute_dt),
             scene_time = difftime(clear_dt, arrival_dt),
             commit_time = difftime(clear_dt, dispatch_dt),
             night_call_flag = dispatch_hour >= start_time | dispatch_hour <= end_time | clear_hour >= start_time | clear_hour <= end_time)
+
+saveRDS(incident_unit_responses_anon_df, './datasets/incident_unit_responses.rds')
